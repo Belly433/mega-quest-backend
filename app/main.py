@@ -2,11 +2,15 @@ from fastapi import FastAPI
 from app.routes import auth
 from app.database.database import engine, Base
 from app.models.user_model import User
-
+from app.models.quiz_model import Quiz
+from app.routes import quiz
+from app.routes import anti_cheat
 app = FastAPI()
 Base.metadata.create_all(bind=engine)
 
 app.include_router(auth.router, prefix="/auth")
+app.include_router(quiz.router, prefix="/quiz")
+app.include_router(anti_cheat.router, prefix="/anti-cheat")
 
 @app.get("/")
 def home():

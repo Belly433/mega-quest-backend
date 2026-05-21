@@ -30,8 +30,18 @@ def register(user: RegisterSchema, db: Session = Depends(get_db)):
     }
 
 @router.post("/login")
-def login(user: LoginSchema):
+def login(user: LoginSchema, db: Session = Depends(get_db)):
+
+    existing_user = db.query(User).filter(User.email == user.email).first()
+
+    if not existing_user:
+        return {"message": "User not found"}
+
+    if existing_user.password != user.password:
+        return {"message": "Incorrect password"}
+
     return {
-        "message": "Login success",
-        "email": user.email
+        "message": "Login successful",
+        "user_id": existing_user.id,
+        "username": existing_user.username
     }

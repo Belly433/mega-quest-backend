@@ -1,8 +1,7 @@
 import random
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
-from sqlalchemy.orm import Session as DBSession
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from app.database.dependencies import get_db
+from app.database.database import SessionLocal
 from app.models.question_model import Question
 
 router = APIRouter()
@@ -116,7 +115,7 @@ async def get_session(pin: str):
 #   {type: "end_quiz"}
 
 @router.websocket("/ws/host/{pin}")
-async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0, db: DBSession = Depends(get_db)):
+async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0):
     await websocket.accept()
 
     if pin not in sessions:
@@ -137,7 +136,6 @@ async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0, db: DBSessio
 
     connections[pin]["host"] = websocket
 
-    # Send current player list on connect
     await _send(websocket, {
         "type": "player_list",
         "players": list(sessions[pin]["players"].keys()),
@@ -153,9 +151,14 @@ async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0, db: DBSessio
                 if session["phase"] != "lobby":
                     continue
 
-                qs = db.query(Question).filter(
-                    Question.quiz_id == session["quiz_id"]
-                ).all()
+                db = SessionLocal()
+                try:
+                    qs = db.query(Question).filter(
+                        Question.quiz_id == session["quiz_id"]
+                    ).all()
+                    qs = list(qs)
+                finally:
+                    db.close()
 
                 if not qs:
                     await _send(websocket, {
@@ -215,6 +218,9 @@ async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0, db: DBSessio
                 })
 
     except WebSocketDisconnect:
+        connections[pin]["host"] = None
+    except Exception as e:
+        print(f"[host_ws error] pin={pin} error={e}")
         connections[pin]["host"] = None
 
 

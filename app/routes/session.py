@@ -116,12 +116,25 @@ async def get_session(pin: str):
 #   {type: "end_quiz"}
 
 @router.websocket("/ws/host/{pin}")
-async def host_ws(websocket: WebSocket, pin: str, db: DBSession = Depends(get_db)):
-    if pin not in sessions:
-        await websocket.close(code=4004)
-        return
-
+async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0, db: DBSession = Depends(get_db)):
     await websocket.accept()
+
+    if pin not in sessions:
+        if quiz_id:
+            sessions[pin] = {
+                "quiz_id": quiz_id,
+                "phase": "lobby",
+                "questions": [],
+                "current_index": -1,
+                "players": {},
+                "current_answers": {},
+            }
+            connections[pin] = {"host": None, "players": {}}
+        else:
+            await websocket.send_json({"type": "error", "message": "Session expired. Go back to dashboard and click Host again."})
+            await websocket.close(code=4004)
+            return
+
     connections[pin]["host"] = websocket
 
     # Send current player list on connect
@@ -211,11 +224,12 @@ async def host_ws(websocket: WebSocket, pin: str, db: DBSession = Depends(get_db
 
 @router.websocket("/ws/player/{pin}")
 async def player_ws(websocket: WebSocket, pin: str):
+    await websocket.accept()
+
     if pin not in sessions:
+        await websocket.send_json({"type": "error", "message": "Session not found. Ask the host for a valid PIN."})
         await websocket.close(code=4004)
         return
-
-    await websocket.accept()
     username: str | None = None
 
     try:

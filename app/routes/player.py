@@ -1,34 +1,21 @@
 from fastapi import APIRouter
+from app.routes.session import sessions
 
 router = APIRouter()
 
-players_db = {}
 
 @router.post("/join")
 async def join_game(data: dict):
+    pin = data.get("pin", "")
+    username = data.get("username", "").strip()
 
-    print("PLAYER RECEIVED =", data)
+    if not pin or not username:
+        return {"valid": False, "message": "PIN and username are required"}
 
-    pin = data["pin"]
-    username = data["username"]
+    if pin not in sessions:
+        return {"valid": False, "message": "Invalid PIN — session not found"}
 
-    if pin not in players_db:
-        players_db[pin] = []
+    if sessions[pin]["phase"] not in ("lobby", "playing"):
+        return {"valid": False, "message": "Session is no longer accepting players"}
 
-    players_db[pin].append({
-        "username": username
-    })
-
-    print("PLAYERS DB =", players_db)
-
-    return {
-        "message": "Player joined"
-    }
-
-
-@router.get("/{pin}")
-async def get_players(pin: str):
-
-    print("GET PLAYERS =", pin)
-
-    return players_db.get(pin, [])
+    return {"valid": True, "pin": pin}

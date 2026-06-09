@@ -6,6 +6,7 @@ from app.database.database import SessionLocal
 from app.models.question_model import Question
 from app.models.game_session_model import GameSession
 from app.models.tab_switch_model import TabSwitchEvent
+from app.models.game_result_model import GameResult
 
 router = APIRouter()
 
@@ -125,6 +126,28 @@ def _leaderboard(pin: str) -> list:
     for i, entry in enumerate(board):
         entry["rank"] = i + 1
     return board
+
+
+def _save_results(pin: str, board: list):
+    """Persist final leaderboard to game_results table."""
+    db = SessionLocal()
+    try:
+        total = len(board)
+        for entry in board:
+            db.add(GameResult(
+                pin=pin,
+                username=entry["username"],
+                score=entry["score"],
+                rank=entry["rank"],
+                total_players=total,
+                finished_at=datetime.utcnow(),
+            ))
+        db.commit()
+    except Exception as e:
+        print(f"[_save_results error] {e}")
+        db.rollback()
+    finally:
+        db.close()
 
 
 def _calc_score(correct: bool, time_taken: float, time_limit: int) -> int:
@@ -259,6 +282,7 @@ async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0):
                     session["phase"] = "finished"
                     board = _leaderboard(pin)
                     _save_session(pin)
+                    _save_results(pin, board)
                     await _broadcast_all(pin, {
                         "type": "game_over",
                         "leaderboard": board,
@@ -281,6 +305,7 @@ async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0):
                 session["phase"] = "finished"
                 board = _leaderboard(pin)
                 _save_session(pin)
+                _save_results(pin, board)
                 await _broadcast_all(pin, {
                     "type": "game_over",
                     "leaderboard": board,
@@ -419,6 +444,7 @@ async def player_ws(websocket: WebSocket, pin: str):
                         session["phase"] = "finished"
                         board = _leaderboard(pin)
                         _save_session(pin)
+                        _save_results(pin, board)
                         await _broadcast_all(pin, {
                             "type": "game_over",
                             "leaderboard": board,

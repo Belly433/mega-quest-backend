@@ -1,17 +1,24 @@
 import os
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.database.database import engine, Base
 from app.models.user_model import User       # noqa: F401 — ensures table is created
 from app.models.quiz_model import Quiz       # noqa: F401
 from app.models.question_model import Question  # noqa: F401
-
-from app.models.game_session_model import GameSession  # noqa: F401 — ensures table is created
-from app.models.tab_switch_model import TabSwitchEvent  # noqa: F401 — ensures table is created
+from app.models.game_session_model import GameSession  # noqa: F401
+from app.models.tab_switch_model import TabSwitchEvent  # noqa: F401
+from app.models.game_result_model import GameResult  # noqa: F401
 from app.routes import auth, quiz, question, session, player, anti_cheat
 
+limiter = Limiter(key_func=get_remote_address)
+
 app = FastAPI(title="Mega Quest API")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 Base.metadata.create_all(bind=engine)
 
@@ -21,15 +28,10 @@ async def startup_event():
     from app.routes.session import load_sessions_from_db
     load_sessions_from_db()
 
-# CORS — allow the frontend origin (set ALLOWED_ORIGINS in prod)
-allowed_origins = os.getenv(
-    "ALLOWED_ORIGINS",
-    "http://localhost:5173,http://localhost:8080,http://localhost:3000"
-).split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # wildcard — credentials not used, so this is safe
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],

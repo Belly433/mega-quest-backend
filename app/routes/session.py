@@ -276,6 +276,14 @@ async def player_ws(websocket: WebSocket, pin: str):
                     "players": list(sessions[pin]["players"].keys()),
                 })
 
+            elif msg_type == "tab_switch" and username:
+                count = int(data.get("count", 1))
+                await _send_host(pin, {
+                    "type": "cheat_warning",
+                    "username": username,
+                    "count": count,
+                })
+
             elif msg_type == "answer" and username:
                 session = sessions[pin]
                 if session["phase"] != "playing":

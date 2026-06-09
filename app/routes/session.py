@@ -3,22 +3,85 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.database.database import SessionLocal
 from app.models.question_model import Question
+from app.models.game_session_model import GameSession
 
 router = APIRouter()
 
 # ── In-memory game state ──────────────────────────────────────────────────────
-# sessions[pin] = {
-#   quiz_id, phase, questions, current_index,
-#   players: {username: {score, answers: {q_id: answer_index}}},
-#   current_answers: {username: {index, time_taken}}
-# }
 sessions: dict = {}
-
-# connections[pin] = {host: WebSocket|None, players: {username: WebSocket}}
 connections: dict = {}
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── DB persistence helpers ────────────────────────────────────────────────────
+
+def _save_session(pin: str):
+    session = sessions.get(pin)
+    if not session:
+        return
+    db = SessionLocal()
+    try:
+        row = db.query(GameSession).filter(GameSession.pin == pin).first()
+        if row:
+            row.phase = session["phase"]
+            row.current_index = session["current_index"]
+            row.players = dict(session["players"])
+            row.current_answers = dict(session["current_answers"])
+        else:
+            row = GameSession(
+                pin=pin,
+                quiz_id=session["quiz_id"],
+                phase=session["phase"],
+                current_index=session["current_index"],
+                players=dict(session["players"]),
+                current_answers=dict(session["current_answers"]),
+            )
+            db.add(row)
+        db.commit()
+    except Exception as e:
+        print(f"[_save_session error] pin={pin} {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def load_sessions_from_db():
+    """Called once at startup to restore non-finished sessions into memory."""
+    db = SessionLocal()
+    try:
+        rows = db.query(GameSession).filter(GameSession.phase != "finished").all()
+        for row in rows:
+            sessions[row.pin] = {
+                "quiz_id": row.quiz_id,
+                "phase": row.phase,
+                "questions": [],  # reloaded when host reconnects
+                "current_index": row.current_index,
+                "players": row.players or {},
+                "current_answers": row.current_answers or {},
+            }
+            connections[row.pin] = {"host": None, "players": {}}
+        print(f"[startup] Loaded {len(rows)} session(s) from DB")
+    except Exception as e:
+        print(f"[load_sessions_from_db error] {e}")
+    finally:
+        db.close()
+
+
+def _reload_questions(pin: str):
+    """Reload question objects for a session that was restored from DB."""
+    session = sessions.get(pin)
+    if not session or session["questions"]:
+        return
+    db = SessionLocal()
+    try:
+        qs = db.query(Question).filter(Question.quiz_id == session["quiz_id"]).all()
+        session["questions"] = list(qs)
+    except Exception as e:
+        print(f"[_reload_questions error] pin={pin} {e}")
+    finally:
+        db.close()
+
+
+# ── Shared helpers ────────────────────────────────────────────────────────────
 
 def _question_payload(q: Question, index: int, total: int) -> dict:
     return {
@@ -86,6 +149,7 @@ async def create_session(data: dict):
         "current_answers": {},
     }
     connections[pin] = {"host": None, "players": {}}
+    _save_session(pin)
     return {"pin": pin}
 
 
@@ -109,10 +173,6 @@ async def get_session(pin: str):
 
 
 # ── Host WebSocket ─────────────────────────────────────────────────────────────
-# Messages from host:
-#   {type: "start_quiz"}
-#   {type: "next_question"}
-#   {type: "end_quiz"}
 
 @router.websocket("/ws/host/{pin}")
 async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0):
@@ -129,10 +189,14 @@ async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0):
                 "current_answers": {},
             }
             connections[pin] = {"host": None, "players": {}}
+            _save_session(pin)
         else:
             await websocket.send_json({"type": "error", "message": "Session expired. Go back to dashboard and click Host again."})
             await websocket.close(code=4004)
             return
+
+    # If session was restored from DB, reload questions so the host can resume
+    _reload_questions(pin)
 
     connections[pin]["host"] = websocket
 
@@ -171,6 +235,7 @@ async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0):
                 session["current_index"] = 0
                 session["phase"] = "playing"
                 session["current_answers"] = {}
+                _save_session(pin)
 
                 q = qs[0]
                 full = _question_payload(q, 0, len(qs))
@@ -191,6 +256,7 @@ async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0):
                 if next_idx >= len(qs):
                     session["phase"] = "finished"
                     board = _leaderboard(pin)
+                    _save_session(pin)
                     await _broadcast_all(pin, {
                         "type": "game_over",
                         "leaderboard": board,
@@ -199,6 +265,7 @@ async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0):
                 else:
                     session["current_index"] = next_idx
                     session["current_answers"] = {}
+                    _save_session(pin)
                     q = qs[next_idx]
                     full = _question_payload(q, next_idx, len(qs))
                     safe = {k: v for k, v in full.items() if k != "correctIndex"}
@@ -211,6 +278,7 @@ async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0):
                 session = sessions[pin]
                 session["phase"] = "finished"
                 board = _leaderboard(pin)
+                _save_session(pin)
                 await _broadcast_all(pin, {
                     "type": "game_over",
                     "leaderboard": board,
@@ -225,8 +293,6 @@ async def host_ws(websocket: WebSocket, pin: str, quiz_id: int = 0):
 
 
 # ── Player WebSocket ───────────────────────────────────────────────────────────
-# First message:  {type: "player_connect", username: "..."}
-# Answer:         {type: "answer", username: "...", answer_index: 0, time_taken: 5.3}
 
 @router.websocket("/ws/player/{pin}")
 async def player_ws(websocket: WebSocket, pin: str):
@@ -236,6 +302,7 @@ async def player_ws(websocket: WebSocket, pin: str):
         await websocket.send_json({"type": "error", "message": "Session not found. Ask the host for a valid PIN."})
         await websocket.close(code=4004)
         return
+
     username: str | None = None
 
     try:
@@ -252,6 +319,7 @@ async def player_ws(websocket: WebSocket, pin: str):
                 session = sessions[pin]
                 if username not in session["players"]:
                     session["players"][username] = {"score": 0, "answers": {}}
+                    _save_session(pin)
 
                 connections[pin]["players"][username] = websocket
 
@@ -261,16 +329,16 @@ async def player_ws(websocket: WebSocket, pin: str):
                     "phase": session["phase"],
                 })
 
-                # If game already in progress, send current question
                 if session["phase"] == "playing" and session["current_index"] >= 0:
-                    q = session["questions"][session["current_index"]]
-                    full = _question_payload(
-                        q, session["current_index"], len(session["questions"])
-                    )
-                    safe = {k: v for k, v in full.items() if k != "correctIndex"}
-                    await _send(websocket, {"type": "question", **safe})
+                    _reload_questions(pin)
+                    if session["questions"]:
+                        q = session["questions"][session["current_index"]]
+                        full = _question_payload(
+                            q, session["current_index"], len(session["questions"])
+                        )
+                        safe = {k: v for k, v in full.items() if k != "correctIndex"}
+                        await _send(websocket, {"type": "question", **safe})
 
-                # Notify host
                 await _send_host(pin, {
                     "type": "player_list",
                     "players": list(sessions[pin]["players"].keys()),
@@ -293,7 +361,6 @@ async def player_ws(websocket: WebSocket, pin: str):
                 if idx < 0 or idx >= len(session["questions"]):
                     continue
 
-                # Prevent double-answering this question
                 if username in session["current_answers"]:
                     continue
 
@@ -304,11 +371,12 @@ async def player_ws(websocket: WebSocket, pin: str):
                 correct = answer_index == q.correct_index
                 points = _calc_score(correct, time_taken, q.time_limit)
                 session["players"][username]["score"] += points
-                session["players"][username]["answers"][idx] = answer_index
+                session["players"][username]["answers"][str(idx)] = answer_index
                 session["current_answers"][username] = {
                     "index": answer_index,
                     "time_taken": time_taken,
                 }
+                _save_session(pin)
 
                 await _send(websocket, {
                     "type": "answer_result",
@@ -327,13 +395,13 @@ async def player_ws(websocket: WebSocket, pin: str):
                     "question_index": idx,
                 })
 
-                # Auto-advance when all players have answered
                 if answered >= total_players:
                     qs = session["questions"]
                     next_idx = idx + 1
                     if next_idx >= len(qs):
                         session["phase"] = "finished"
                         board = _leaderboard(pin)
+                        _save_session(pin)
                         await _broadcast_all(pin, {
                             "type": "game_over",
                             "leaderboard": board,
@@ -342,6 +410,7 @@ async def player_ws(websocket: WebSocket, pin: str):
                     else:
                         session["current_index"] = next_idx
                         session["current_answers"] = {}
+                        _save_session(pin)
                         q = qs[next_idx]
                         full = _question_payload(q, next_idx, len(qs))
                         safe = {k: v for k, v in full.items() if k != "correctIndex"}

@@ -7,11 +7,18 @@ from app.models.user_model import User       # noqa: F401 — ensures table is c
 from app.models.quiz_model import Quiz       # noqa: F401
 from app.models.question_model import Question  # noqa: F401
 
+from app.models.game_session_model import GameSession  # noqa: F401 — ensures table is created
 from app.routes import auth, quiz, question, session, player, anti_cheat
 
 app = FastAPI(title="Mega Quest API")
 
 Base.metadata.create_all(bind=engine)
+
+
+@app.on_event("startup")
+async def startup_event():
+    from app.routes.session import load_sessions_from_db
+    load_sessions_from_db()
 
 # CORS — allow the frontend origin (set ALLOWED_ORIGINS in prod)
 allowed_origins = os.getenv(

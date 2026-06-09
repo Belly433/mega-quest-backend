@@ -8,6 +8,7 @@ from app.models.quiz_model import Quiz       # noqa: F401
 from app.models.question_model import Question  # noqa: F401
 
 from app.models.game_session_model import GameSession  # noqa: F401 — ensures table is created
+from app.models.tab_switch_model import TabSwitchEvent  # noqa: F401 — ensures table is created
 from app.routes import auth, quiz, question, session, player, anti_cheat
 
 app = FastAPI(title="Mega Quest API")

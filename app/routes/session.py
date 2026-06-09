@@ -1,9 +1,11 @@
 import random
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from datetime import datetime
 from app.database.database import SessionLocal
 from app.models.question_model import Question
 from app.models.game_session_model import GameSession
+from app.models.tab_switch_model import TabSwitchEvent
 
 router = APIRouter()
 
@@ -346,6 +348,21 @@ async def player_ws(websocket: WebSocket, pin: str):
 
             elif msg_type == "tab_switch" and username:
                 count = int(data.get("count", 1))
+                # Persist event to database
+                db = SessionLocal()
+                try:
+                    db.add(TabSwitchEvent(
+                        pin=pin,
+                        username=username,
+                        switch_count=count,
+                        timestamp=datetime.utcnow(),
+                    ))
+                    db.commit()
+                except Exception as e:
+                    print(f"[tab_switch save error] {e}")
+                    db.rollback()
+                finally:
+                    db.close()
                 await _send_host(pin, {
                     "type": "cheat_warning",
                     "username": username,
